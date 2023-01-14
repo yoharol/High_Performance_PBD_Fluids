@@ -54,7 +54,7 @@ We can solve this by brute force that we check all pair of particles $\mathcal{O
 
 **Baseline:** 
 - Store all particles into a $m\times m$ hash grid
-- Each cell of the hash grid represents $d\times d$ space$(d\geq2r)$
+- Each cell of the hash grid represents $d\times d$ space $(d \geq 2r)$
 - Find neighboring particles in $3\times3$ grid cells
 
 
