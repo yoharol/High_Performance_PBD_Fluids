@@ -134,3 +134,8 @@ $$\mathbf{x}_i=\mathbf{x}_i+\Delta\mathbf{x}_i$$
 
 Finally, the implementation with CUDA is expected.
 
+## Evaluation
+
+- Accuracy: Average density in each time step(It should be as constant as possible)
+- Total space cost
+- Average time cost of each step 
