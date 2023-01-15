@@ -1,8 +1,8 @@
 # High Performance PBD Fluids
 
-This program is an implementation of [Position Based Fluids](https://mmacklin.com/pbf_sig_preprint.pdf).
+Thisp is an implementation of [Position Based Fluids](https://mmacklin.com/pbf_sig_preprint.pdf).
 
-Basic implementation on CPU, multi-thread programming, vectorization and CUDA acceleration is expected.
+Based on fundamental implementation, multi-thread programming, vectorization and CUDA is expected.
 
 ## Method
 
