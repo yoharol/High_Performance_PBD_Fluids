@@ -26,7 +26,7 @@ There are several steps in a single time step as shown here:
 Implementation of CPU parallelization and SIMD vectorization can be designed for each part. Also, the whole algorithm can be applied on GPU by CUDA. 
 
 ### 1. Particle State Update
-
+ 
 This step is simple:
 
 $$\begin{align*}
