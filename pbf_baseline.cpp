@@ -397,13 +397,10 @@ int main() {
   get_average_rho();
   solver_summary();
 
+  write_frame(0);
+
   for (int frame = 0; frame < 120; frame++) {
-    if (frame == 0) write_frame(0);
-    if (frame == 20) write_frame(20);
-    if (frame == 40) write_frame(40);
-    if (frame == 60) write_frame(60);
-    if (frame == 80) write_frame(80);
-    if (frame == 100) write_frame(100);
+    if ((frame + 1) % 20 == 0) write_frame(frame + 1);
 
     prediction();
     collision();
@@ -419,7 +416,6 @@ int main() {
     update_vel();
     apply_viscosity();
   }
-  write_frame(120);
 
   return 0;
 }
