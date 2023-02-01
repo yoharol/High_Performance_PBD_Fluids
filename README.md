@@ -11,12 +11,20 @@ What's special about thie repository:
 
 `pbf.py` and `pbf_dem.py` are 2 prototype implementations in [Taichi](https://github.com/taichi-dev/taichi). All the c++ implementation is based on `pbf_dem.py`. 
 
+## Build
+
+Baseline implementation:
+
+```shell
+g++ pbf_baseline.cpp -O3 -o pbf
+```
+
 ## Method
 
 Position based fluids is a particle based simulation method. We start with a large number of particles as follows:
 
 <p align="center">
-  <img src="img/particles.png" width=400/>
+  <img src="100.png" width=400/>
 </p>
 
 To focus on computational efficiency, we simulate these particles in $2D$ space.
