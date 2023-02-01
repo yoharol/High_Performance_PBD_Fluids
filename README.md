@@ -4,6 +4,13 @@ Thisp is an implementation of [Position Based Fluids](https://mmacklin.com/pbf_s
 
 Based on fundamental implementation, multi-thread programming, vectorization and CUDA is expected.
 
+What's special about thie repository:
+
+- **Simplicity**: Only single file for each version of implementation.
+- **Independency**: No extension library required. The only included file is `stb_image_write.h`.
+
+`pbf.py` and `pbf_dem.py` are 2 prototype implementations in [Taichi](https://github.com/taichi-dev/taichi). All the c++ implementation is based on `pbf_dem.py`. 
+
 ## Method
 
 Position based fluids is a particle based simulation method. We start with a large number of particles as follows:

@@ -33,35 +33,39 @@ def sph_kernel2d_diff(r: float, h: float):
   return result * SIGMA2D / ti.pow(h, 2) / h
 
 
-n = 70
+n = 50
 N = n * n
-r = 0.2 / n
-h = r * 4.0
+scale = 0.6
+r = scale / n / 2.0
+h = r * 4.1
 h_sqr = h * h
-cell_size = h * 2.0
+cell_size = h * 1.01
 
 standard_rho = 1000.0
-mass = 0.16 * standard_rho / N
+mass = scale * scale * standard_rho / N
 g = ti.Vector([0.0, -1.0])
 fps = 60
 dt = 1.0 / fps
 substeps = 50
 epsilon = 100.0
 
-scorr_k = 6e-3
+scorr_k = 3e-2
 scorr_n = 4.0
 scorr_frac = 0.2
-visc_c = 3e-5
+visc_c = 2e-5
 
 grid_count = int(1.0 / cell_size) + 1
 
-max_neighbors = 100
+max_neighbors = 64
 max_particle_in_cell = 64
 
 grid_num_particles = ti.field(dtype=ti.i32, shape=(grid_count, grid_count))
-grid_to_particles = ti.field(dtype=ti.i32,
-                             shape=(grid_count, grid_count,
-                                    max_particle_in_cell))
+grid_prefix = ti.field(dtype=ti.i32, shape=(grid_count, grid_count))
+grid_tail = ti.field(dtype=ti.i32, shape=(grid_count, grid_count))
+grid_curr = ti.field(dtype=ti.i32, shape=(grid_count, grid_count))
+column_prefix = ti.field(dtype=ti.i32, shape=grid_count)
+grid_particles_arr = ti.field(dtype=ti.i32, shape=N)
+
 particle_num_neighbours = ti.field(dtype=ti.i32, shape=N)
 particle_neighbours = ti.field(dtype=ti.i32, shape=(N, max_neighbors))
 
@@ -83,8 +87,8 @@ def init():
   for k in range(N):
     i = int(k / n) / float(n)
     j = int(k % n) / float(n)
-    px = 0.3 + 0.4 * i
-    py = 0.2 + 0.4 * j
+    px = 0.3 + scale * i
+    py = 0.2 + scale * j
     x[k] = ti.Vector([px, py])
 
 
@@ -99,7 +103,7 @@ def prediciton():
 def update_vel():
   for k in range(N):
     v[k] = (x[k] - x_cache[k]) / dt
-    x_cache[k] = x[k]
+    #x_cache[k] = x[k]
 
 
 @ti.kernel
@@ -138,7 +142,7 @@ def neighbor_summary():
 
 @ti.kernel
 def preupdate():
-  grid_num_particles.fill(0)
+  pass
 
 
 @ti.func
@@ -169,30 +173,49 @@ def collision():
 
 
 @ti.kernel
-def update_grid():
+def dem_update():
+  grid_num_particles.fill(0)
+  particle_num_neighbours.fill(0)
+  column_prefix.fill(0)
+  for i in x:
+    cell_index = get_grid_pos(x[i])
+    grid_num_particles[cell_index] += 1
+
+  for i, j in grid_num_particles:
+    column_prefix[i] += grid_num_particles[i, j]
+
+  grid_prefix[0, 0] = 0
+  ti.loop_config(serialize=True)
+  for i in range(1, grid_count):
+    grid_prefix[i, 0] = grid_prefix[i - 1, 0] + column_prefix[i - 1]
+
+  for i in range(grid_count):
+    for j in range(grid_count):
+      if j > 0:
+        grid_prefix[i, j] = grid_prefix[i, j - 1] + grid_num_particles[i, j - 1]
+      grid_tail[i, j] = grid_prefix[i, j] + grid_num_particles[i, j]
+      grid_curr[i, j] = grid_prefix[i, j]
 
   for i in x:
-    particle_num_neighbours[i] = 0
     cell_index = get_grid_pos(x[i])
-    index = ti.atomic_add(grid_num_particles[cell_index], 1)
-    if index < max_particle_in_cell:
-      grid_to_particles[cell_index, index] = i
+    index = ti.atomic_add(grid_curr[cell_index], 1)
+    grid_particles_arr[index] = i
 
-  for index_i in x:
-    p_i = x[index_i]
+  for i in x:
+    p_i = x[i]
     cell_index = get_grid_pos(p_i)
     n_count = 0
     for offsets in ti.static(ti.grouped(ti.ndrange((-1, 2), (-1, 2)))):
       cell_n = cell_index + offsets
       if is_in_grid(cell_n):
-        for j in range(grid_num_particles[cell_n]):
-          index_j = grid_to_particles[cell_n, j]
-          if n_count < max_neighbors and index_j != index_i:
-            p_j = x[index_j]
+        for k in range(grid_prefix[cell_n], grid_tail[cell_n]):
+          j = grid_particles_arr[k]
+          if i != j and n_count < max_neighbors:
+            p_j = x[j]
             if (p_i - p_j).norm_sqr() < h_sqr:
-              particle_neighbours[index_i, n_count] = index_j
+              particle_neighbours[i, n_count] = j
               n_count += 1
-    particle_num_neighbours[index_i] = n_count
+    particle_num_neighbours[i] = n_count
 
 
 @ti.kernel
@@ -291,7 +314,7 @@ def plot_density_distribution():
 
 
 init()
-update_grid()
+dem_update()
 rho_integral()
 get_avg_rho()
 
@@ -322,19 +345,14 @@ while window.running:
   preupdate()
   prediciton()
   collision()
-  nan_debug('prediction')
-  update_grid()
-  nan_debug('update grid')
+
+  dem_update()
 
   for _ in range(substeps):
     rho_integral()
-    nan_debug(f'integral {_}')
     compute_lambda()
-    nan_debug(f'lambda compute {_}')
     compute_delta_pos()
-    nan_debug(f'deelta compute {_}')
     collision()
-    nan_debug(f'collision in substep {_}')
 
   get_avg_rho()
   avg_rho_frames.append(avgrho[None])
@@ -342,7 +360,6 @@ while window.running:
 
   update_vel()
   apply_viscosity()
-  nan_debug('velocity update')
 
   canvas.set_background_color(color=(0.0, 0.0, 0.0))
   canvas.circles(x, color=(0.7, 0.3, 0.2), radius=r)
