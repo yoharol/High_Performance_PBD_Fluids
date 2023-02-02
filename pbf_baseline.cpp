@@ -5,6 +5,10 @@
 #include <random>
 #include <functional>
 #include <string>
+#include <chrono>
+#include <sstream>
+#include <memory>
+#include <iomanip>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -375,7 +379,6 @@ void print_array(T* arr, int len) {
 void write_frame(int frame) {
   std::string filename = std::to_string(frame) + ".png";
   write_frame_to_png(filename.c_str());
-  std::cout << filename << " complete\n";
 }
 
 void solver_summary() {
@@ -390,16 +393,72 @@ void solver_summary() {
   std::cout << "Initial average density: " << avgrho << std::endl;
 }
 
+class Timer {
+ public:
+  void setTimer() {
+    if (m_base_timer != nullptr) {
+      std::cerr << "Warning! Overwriting existing timer\n";
+      m_base_timer = nullptr;
+    }
+    m_base_timer = std::make_unique<BaseTimer>(
+        BaseTimer{std::chrono::system_clock::now()});
+  }
+
+  double getTimer(std::string message = "") {
+    if (m_base_timer == nullptr) {
+      std::cerr << "Error! No timer initialized\n";
+      return -1.0;
+    } else {
+      const auto time_in_microsec = get_elapsed_time();
+      const auto time_in_millisec = time_in_microsec / 1000.0;
+      const auto time_in_second = time_in_millisec / 1000.0;
+      std::ostringstream sstream;
+      sstream << "[ " << std::setw(max<int>(30, message.length())) << message
+              << " :\t";
+      if (time_in_second > 1.0)
+        sstream << std::setw(8) << time_in_second << "s \t]" << std::endl;
+      else
+        sstream << std::setw(8) << time_in_millisec << "ms\t]" << std::endl;
+      std::cout << sstream.str();
+      return time_in_second;
+    }
+  }
+
+  double endTimer(std::string message = "") {
+    double t = getTimer(message);
+    m_base_timer = nullptr;
+    return t;
+  }
+
+  int64_t get_elapsed_time() const {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::system_clock::now() - m_base_timer->m_start_time)
+        .count();
+  }
+
+ private:
+  typedef struct {
+    std::chrono::system_clock::time_point m_start_time;
+  } BaseTimer;
+
+  std::unique_ptr<BaseTimer> m_base_timer = nullptr;
+};
+
 int main() {
+  Timer timer;
+
   init();
   neighbor_update();
   rho_integral();
   get_average_rho();
   solver_summary();
 
+  timer.setTimer();
+
   write_frame(0);
 
-  for (int frame = 0; frame < 120; frame++) {
+  int totalframe = 20;
+  for (int frame = 0; frame < totalframe; frame++) {
     if ((frame + 1) % 20 == 0) write_frame(frame + 1);
 
     prediction();
@@ -415,7 +474,11 @@ int main() {
 
     update_vel();
     apply_viscosity();
+    timer.getTimer("frame " + std::to_string(frame));
   }
+
+  double totaltime = timer.endTimer("pbf fluids");
+  std::cout << "avg time per frame " << totaltime / totalframe << std::endl;
 
   return 0;
 }
