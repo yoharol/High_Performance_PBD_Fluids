@@ -1,33 +1,30 @@
-# High Performance PBD Fluids
+# High Performance Positon Based Fluids
 
-Thisp is an implementation of [Position Based Fluids](https://mmacklin.com/pbf_sig_preprint.pdf).
+## Introduction
 
-Based on fundamental implementation, multi-thread programming, vectorization and CUDA is expected.
+This project is an implementation of [Position Based Fluids](https://mmacklin.com/pbf_sig_preprint.pdf), aiming at utilizing several techniques to improve the performance of simulation.
+
+There are 4 versions included:
+
+1. `pbf_baseline.cpp`: Single thread implementation
+2. `pbf_simd.cpp`: Single thread implementation with SIMD vectorization
+3. `pbf_omp.cpp`: Multi-thread implementation with SIMD vectorization
+4. `pbf_cuda.cu`: CUDA implementation on GPU
 
 What's special about thie repository:
 
 - **Simplicity**: Only single file for each version of implementation.
-- **Independency**: No extension library required. The only included file is `stb_image_write.h`.
-
-`pbf.py` and `pbf_dem.py` are 2 prototype implementations in [Taichi](https://github.com/taichi-dev/taichi). All the c++ implementation is based on `pbf_dem.py`. 
-
-## Build
-
-Baseline implementation:
-
-```shell
-g++ pbf_baseline.cpp -O3 -o pbf
-```
+- **Independency**: No external library required.
 
 ## Method
 
 Position based fluids is a particle based simulation method. We start with a large number of particles as follows:
 
 <p align="center">
-  <img src="100.png" width=400/>
+  <img src="img/0.png" width=300/>
 </p>
 
-To focus on computational efficiency, we simulate these particles in $2D$ space.
+And we expect to simulate these particles as fluids.
 
 Suppose there are $n$ particles. For each particle $i$, we store its position $\mathbf{x}_i$ and velocity $\mathbf{v}_i$ at time step $t$. The pressure $p_i$ at the position of particle $i$ will be computed, and inner force is generated from pressure. Based on inner forces, we update the state of each particle.
 
@@ -38,11 +35,26 @@ There are several steps in a single time step as shown here:
   <img src="img/algorithm.png" width=400/>
 </p>
 
-Implementation of CPU parallelization and SIMD vectorization can be designed for each part. Also, the whole algorithm can be applied on GPU by CUDA. 
+We summary the whole process of single simulation loop into these steps, following the order of execution in the simulation loop:
 
-### 1. Particle State Update
+1. `prediction`: Apply forces and predict positions.
+2. `collision`: Performe collision detection and response.
+3. `neighbor`: Neighborhood finding of all particles.
+4. `rho_integral`: Density integration of all particles.
+5. `lambda_compute`: calculate $\lambda_i$ for each particle.
+6. `pos_update`: Calculate $\Delta\mathbf{p}_i$ and apply to each particle.
+7. `vel_update`: Update velocity $\mathbf{v}_i$.
+8. `viscosity`: Apply viscosity confinement.
+
+There are 8 steps in total, and we catogrize them into 3 types:
+
+1. **Per-particle update**, including `prediction`, `collison` and `vel_update`. These steps are simple update of the state of each particle.
+2. **Neighborhood update**, including `neighbor`. Neighborood finding is a hard-to-solve problem considering parallization and memory efficiency.
+3. **Neighbor-based update**, update the state of each particle based on states of all neighborhood particles.  
+
+### 1. Per-particle update
  
-This step is simple:
+Steps of this type are fairly simple. For example:
 
 $$\begin{align*}
 \mathbf{v}_i&\Leftarrow \mathbf{v}_i + \Delta t \mathbf{f}_{ext}(\mathbf{x}_i)\\
@@ -53,19 +65,21 @@ $$\begin{align*}
 - $\mathbf{f}_{ext}(\mathbf{x}_i)$ is the global external force at position $\mathbf{x}_i$ such as gravity. 
 - $\mathbf{x}_{i}$ is the temporal predicted position to be modified in following steps.
 
+The update of each particle is only related to its own state. 
+
 **Baseline:** Iterate through all particles in single thread $\mathcal{O}(n)$ 
 
 **Expected improvements:**
 
-- [ ] CPU parallelization for each particle
-- [ ] Vectorization: Update multiple particles at once
-- [ ] GPU parallelization by CUDA
+- [x] CPU parallelization for each particle
+- [x] Vectorization: Update multiple particles at once
+- [x] GPU parallelization by CUDA
 
-### 2. Neighbourhood Finding
+### 2. Neighbourhood Update
 
 For each particle, we need to find its neighboring partices $N_i(x_i)$ within a given range $r$. 
 
-We can solve this by brute force that we check all pair of particles $\mathcal{O}(n^2)$. When we have more than $10K$ particles, it will cost infinite time.
+We can solve this by brutal force that we check all pair of particles $\mathcal{O}(n^2)$. When we have more than $1K$ particles, the time cost is already unacceptable.
 
 **Baseline:** 
 - Store all particles into a $m\times m$ hash grid
@@ -77,11 +91,11 @@ We can solve this by brute force that we check all pair of particles $\mathcal{O
   <img src="img/hashgrid.png" width=300/>
 </p>
 
-However, hash grid requires dynamic space allocation, which is time costing especially on GPU. 
+However, hash grid requires dynamic space allocation, leading to unstable time cost of each frame. Also, dynamic memory allocation is way more complicated on GPU.
 
 If we store the hash grid in static array, it is easy to be parallelized but huge waste of store space.
 
-**Expected improvements:**
+**Improved Method:**
 
 We want to store number of particles in each cell, and index of those particles in compact 1d array, similar to Compressed Row(CSR) format.
 
@@ -89,21 +103,28 @@ We want to store number of particles in each cell, and index of those particles 
   <img src="img/csr.png" width=600/>
 </p>
 
-- [ ] Improvement level 1:
+1. First we iterate through all particles, count how many particles are included in each grid cell. The result is stored in 1d array `grid_particle_count[m*m]`. In the example shown in the figure, `grid_particle_count[4]=[2, 3, 1, 4]`. This step can be parallelized for each particle.
+2. Add up all all the particle count in each column `column_particle_count[m]`. In the example it is `columm_particle_count[2]=[5, 5]`. This step can be parallelized for each grid cell.
+3. Use a serialized loop to compute the prefix of each column. In the example it is `column_prefix[2]=[0, 5]`.
+4. Set prefix of first grid cell of each column as column prefix. In the example it is `grid_prefix[4]=[0, null, 5, null]`.
+5. Based on prefix of first cell of each column, we complete the whole prefix table. In the example it is `grid_prefix[4]=[0, 2, 5, 6]`. This step can be parallelized for each column.
 
-- Count number of particles in each grid cell, store in 1d array `particle_count[m*m]`
-- Create a 1d array `particle_in_grid[n]`
-- Compute the start index of each grid cell, store in `prefix[m*m]`
-- Insert particle index into `particle_in_grid[n]`
+
+- [x] Baseline:
+
+- Single thread implementation of all steps.
 
 
-- [ ] Improvement level 2:
+- [x] Improvements:
 
-- Make steps in level 1 paralleled
+- Parallization on CPU
+- Parallization on GPU
 
-### 3. Density estimation
+### 3. Neighbor-Based Update
 
-For each particle $i$, we estimate the density $\rho_i$ at its positon $\mathbf{x}_i$ by:
+Steps in this section requires to iterate through all neighbors of each particle to update its state.
+
+For example, for each particle $i$, we estimate the density $\rho_i$ at its positon $\mathbf{x}_i$ by:
 
 $$\rho_i=\sum_j m_j W(\mathbf{x}_i-\mathbf{x}_j, h)$$
 
@@ -112,17 +133,6 @@ $W$ is a weight function based on distance and constant parameter $h$.
 Denote the rest density as $\rho_0$, we have the constraints:
 
 $$C_i(\mathbf{x}_1, \mathbf{x}_2, \dots, \mathbf{x}_n)=\frac{\rho_i}{\rho_0}-1$$
-
-**Baseline:**
-
-- Iterate through all particles
-
-**Expected Improvements**:
-
-- [ ] Paralleled for each particle
-- [ ] Apply SIMD vectorization when computing density
-
-### 4. Solve Constraints
 
 A prarameter $\lambda_i$  is computed as:
 
@@ -142,15 +152,166 @@ $$\mathbf{x}_i=\mathbf{x}_i+\Delta\mathbf{x}_i$$
 
 **Expected Improvements**:
 
-- [ ] Paralleled for each particle
-- [ ] Apply SIMD vectorization
+- [x] Parallization on CPU
+- [x] Parallization on GPU
 
-### 5. Position Based Fluids on GPU
+## Experiments and Results
 
-Finally, the implementation with CUDA is expected.
+CPU implementation is tested on a x86-64 CPU with 76 threads in total. SIMD vectorization is implemented with AVX512 vectorization extension.
 
-## Evaluation
+GPU implementation is tested on nvidia A100 graphics card, cuda version 11.7.
 
-- Accuracy: Average density in each time step(It should be as constant as possible)
-- Total space cost
-- Average time cost of each step 
+We simulate 120 frames of the fluid animation. After each 20 frames we generate an image to make sure the simulation is propriate and stable. All the output images of each implementation is basically the same:
+
+
+
+<p align="center">
+  <img src="img/combined.jpg" width=600/>
+</p>
+
+Based on the observation that the simulated animation is visually plausible, we evaluate each solver in several aspects:
+
+1. Average density of each frame. The average density should be as stable as possible.
+2. Maximum number of particles in grid cell. It should be as stable as possible.
+3. Time cost of each frame.
+4. Time cost of each step.
+
+### 1. Baseline
+
+
+<div class="row">
+  <div class="column" style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/baseline/baseline_rho.png" style="width:100%">
+    <figcaption style="text-align:center">Average density.</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/baseline/baseline_maxpic.png" style="width:100%">
+    <figcaption style="text-align:center">Max particle in cell</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/baseline/baseline_timesteps.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/baseline/baseline_datalog.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost of substeps</figcaption>
+    </figure>
+  </div>
+</div>
+
+1. The average density rises after the particles collide with the bottom boundary, leading to compression and incresing of density.  
+2. Max particles in cell is stable.
+3. Time cost of each frame rises after the particle collidee with bottom boundary. More neighbor particles leads to slower iteration.
+4. Detailed time log shows that **neighbor-based update** costs most of the time, and all other steps are relatively ignorable.
+
+### 2. SIMD vectorization
+
+The SIMD vectorization has been only applied to per-particle update substeps. Neighborhood related substeps has issues that the number of neighbor particles is indefinite, so the SIMD vectorization will only leads to worse performance. 
+
+<div class="row">
+  <div class="column" style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/simd/simd_rho.png" style="width:100%">
+    <figcaption style="text-align:center">Average density.</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/simd/simd_maxpic.png" style="width:100%">
+    <figcaption style="text-align:center">Max particle in cell</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/simd/simd_timesteps.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/simd/simd_datalog.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost of substeps</figcaption>
+    </figure>
+  </div>
+</div>
+
+The comparison of detailed time cost of per-particle update substeps will be shown in OMP section.
+
+### 3. OMP Parallization
+
+OMP parallization has been applied to all substeps. 
+
+<div class="row">
+  <div class="column" style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/omp/omp_rho.png" style="width:100%">
+    <figcaption style="text-align:center">Average density.</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/omp/omp_maxpic.png" style="width:100%">
+    <figcaption style="text-align:center">Max particle in cell</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/omp/omp_timesteps.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/omp/omp_datalog.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost of substeps</figcaption>
+    </figure>
+  </div>
+</div>
+
+The peak time cost on 20, 40 and 80 frames etc. is caused by rendering output images. The time cost of neighbor-related update subsetps have been decreased, but due to detailed observation, the time cost of per-particle update substeps **increased**. 
+
+So another experiment has been performed, with omp threads limited to **16**. Time cost of the most simple per-particle update substeps are as follows:
+
+| Solver     | Prediction | Position Update | Velocity Update |
+| ---------- | :--------: | :-------------: | :-------------: |
+| Baseline   |  1.98e-5   |     2.32e-4     |     2.45e-6     |
+| SIMD       |  2.59e-6   |     2.19e-4     |     2.04e-6     |
+| SIMD+omp   |  3.15e-4   |     2.30e-4     |     4.63e-5     |
+| SIMD+omp16 |  5.20e-6   |     1.97e-4     |     6.04e-6     |
+
+The result shows that when content of an iteration is simple, openmp with 76 threads make the performance worse. The time cost of arranging and launching of those threads cost too much time. If we decrease the number of threads to 16, the performance can exceed the baseline. However, the best performance is achieved by SIMD single thread execution.
+
+### 4. CUDA
+
+<div class="row">
+  <div class="column" style="float: left; width: 49.9%; ">
+    <figure>
+    <img src="img/cuda/cuda_rho.png" style="width:100%">
+    <figcaption style="text-align:center">Average density.</figcaption>
+    </figure>
+  </div>
+  <div class="column"style="float: left; width: 49.9%;">
+    <figure>
+    <img src="img/cuda/cuda_timesteps.png" style="width:100%">
+    <figcaption style="text-align:center">Time cost</figcaption>
+    </figure>
+  </div>
+</div>
+
+CUDA implementation is only evaluated by average density and time cost of each frame, since it will be definitely faster than any other implementation. Implementation of this part took most of the time of this project, with a high performance solver as pay back.
+
+## Conclusion
+
+This project has summarized 3 performance optimization techniques, CPU parallization, SIMD vectorization and CUDA on a physics simulation solver. 
+
+Position based fluids cannot handle massive number of particles more than 10K, and I believe that when number of particles is much larger, CPU parallization will definitely bring improvements. The most inspiring lesson from this project is the fact that CPU parallization might make it worse when you have a simple serialized loop, and more CPU threads can make the solver unstable. 
+
+For implementation on CPU, the best choice is applying SIMD vectorization as much as possible, and only parallize the loops that each iteration is complicated. For implementation on CUDA, utilizing tools such as cuda-memcheck and cuda-gdb are much helpful.
+
