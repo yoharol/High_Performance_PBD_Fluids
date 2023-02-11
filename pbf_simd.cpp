@@ -2,9 +2,16 @@
 #include <math.h>
 #include <assert.h>
 
+#include <iostream>
 #include <random>
 #include <functional>
 #include <string>
+#include <chrono>
+#include <sstream>
+#include <memory>
+#include <iomanip>
+#include <vector>
+#include <immintrin.h>
 
 #include "utils.h"
 
@@ -23,6 +30,8 @@ const REAL cell_size = h * 1.085f;
 const REAL standard_rho = 1000.0f;
 const REAL mass = scale * scale * standard_rho / static_cast<REAL>(N);
 std::vector<REAL> g = {0.0, -1.0};
+std::vector<REAL> g_vec = {0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0,
+                           0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0};
 
 const int fps = 60;
 const REAL dt = 1.0f / static_cast<REAL>(fps);
@@ -52,7 +61,6 @@ std::vector<REAL> p(N);
 std::vector<REAL> rho(N);
 std::vector<REAL> lambdaf(N);
 REAL avgrho;
-int max_part;
 
 inline void vec_set(REAL* a, int anr, REAL value1, REAL value2) {
   a[anr * 2] = value1;
@@ -64,9 +72,23 @@ inline void vec_cpy(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
   a[anr * 2 + 1] = b[bnr * 2 + 1] * mul;
 }
 
+inline void vec_cpy_8(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(a + anr * 2, _mm512_mul_ps(b_vec, mul_vec));
+}
+
 inline void vec_add(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
   a[anr * 2] += b[bnr * 2] * mul;
   a[anr * 2 + 1] += b[bnr * 2 + 1] * mul;
+}
+
+inline void vec_add_8(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
+  __m512 a_vec = _mm512_loadu_ps(a + anr * 2);
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(a + anr * 2,
+                   _mm512_add_ps(a_vec, _mm512_mul_ps(b_vec, mul_vec)));
 }
 
 inline void vec_scale(REAL* a, int anr, REAL mul) {
@@ -80,6 +102,15 @@ inline void vec_set_add(REAL* dst, int dnr, REAL* a, int anr, REAL* b, int bnr,
   dst[dnr * 2 + 1] = (a[anr * 2 + 1] + b[bnr * 2 + 1]) * mul;
 }
 
+inline void vec_set_add_8(REAL* dst, int dnr, REAL* a, int anr, REAL* b,
+                          int bnr, REAL mul = 1.0) {
+  __m512 a_vec = _mm512_loadu_ps(a + anr * 2);
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(dst + dnr * 2,
+                   _mm512_mul_ps(_mm512_add_ps(a_vec, b_vec), mul_vec));
+}
+
 inline void vec_set_sub(REAL* dst, int dnr, REAL* a, int anr, REAL* b, int bnr,
                         REAL mul = 1.0) {
   dnr *= 2;
@@ -87,6 +118,15 @@ inline void vec_set_sub(REAL* dst, int dnr, REAL* a, int anr, REAL* b, int bnr,
   bnr *= 2;
   dst[dnr++] = (a[anr++] - b[bnr++]) * mul;
   dst[dnr] = (a[anr] - b[bnr]) * mul;
+}
+
+inline void vec_set_sub_8(REAL* dst, int dnr, REAL* a, int anr, REAL* b,
+                          int bnr, REAL mul = 1.0) {
+  __m512 a_vec = _mm512_loadu_ps(a + anr * 2);
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(dst + dnr * 2,
+                   _mm512_mul_ps(_mm512_sub_ps(a_vec, b_vec), mul_vec));
 }
 
 inline REAL vec_dot(REAL* a, int anr, REAL* b, int bnr) {
@@ -172,17 +212,20 @@ void init() {
 }
 
 void prediction() {
-  for (int k = 0; k < N; k++) {
-    vec_cpy(x_cache.data(), k, x.data(), k);
-    vec_add(v.data(), k, g.data(), 0, dt);
-    vec_add(x.data(), k, v.data(), k, dt);
+  for (int k = 0; k < N; k += 8) {
+    vec_cpy_8(x_cache.data(), k, x.data(), k);
+    vec_add_8(v.data(), k, g_vec.data(), 0, dt);
+    vec_add_8(x.data(), k, v.data(), k, dt);
   }
 }
 
 void update_vel() {
-  for (int k = 0; k < N; k++) {
-    vec_set_sub(v.data(), k, x.data(), k, x_cache.data(), k, 1.0 / dt);
+  for (int k = 0; k < N; k += 8) {
+    vec_set_sub_8(v.data(), k, x.data(), k, x_cache.data(), k, 1.0 / dt);
   }
+
+  // for (int k = 0; k < N; k++)
+  //   vec_set_sub(v.data(), k, x.data(), k, x_cache.data(), k, 1.0 / dt);
 }
 
 void collision() {
@@ -208,7 +251,7 @@ void neighbor_update() {
     grid_num_particles[get_grid_id(gridx, gridy)] += 1;
   }
 
-  for (int i = 0; i < grid_count * grid_count; i++) {
+    for (int i = 0; i < grid_count * grid_count; i++) {
     column_prefix[i / grid_count] += grid_num_particles[i];
   }
 
@@ -337,7 +380,13 @@ void apply_viscosity() {
 
 void get_average_rho() {
   avgrho = 0.0f;
-  for (int i = 0; i < N; i++) avgrho += rho[i];
+  __m512 avgrho_vec = _mm512_setzero_ps();
+  for (int i = 0; i < N; i += 16) {
+    __m512 rho_vec = _mm512_loadu_ps(rho.data() + i);
+    avgrho_vec = _mm512_add_ps(avgrho_vec, rho_vec);
+  }
+
+  for (int i = 0; i < 16; i++) avgrho += avgrho_vec[i];
   avgrho /= N;
 }
 

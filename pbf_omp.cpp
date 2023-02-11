@@ -2,9 +2,16 @@
 #include <math.h>
 #include <assert.h>
 
+#include <iostream>
 #include <random>
 #include <functional>
 #include <string>
+#include <chrono>
+#include <sstream>
+#include <memory>
+#include <iomanip>
+#include <vector>
+#include <immintrin.h>
 
 #include "utils.h"
 
@@ -23,6 +30,8 @@ const REAL cell_size = h * 1.085f;
 const REAL standard_rho = 1000.0f;
 const REAL mass = scale * scale * standard_rho / static_cast<REAL>(N);
 std::vector<REAL> g = {0.0, -1.0};
+std::vector<REAL> g_vec = {0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0,
+                           0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0};
 
 const int fps = 60;
 const REAL dt = 1.0f / static_cast<REAL>(fps);
@@ -52,7 +61,6 @@ std::vector<REAL> p(N);
 std::vector<REAL> rho(N);
 std::vector<REAL> lambdaf(N);
 REAL avgrho;
-int max_part;
 
 inline void vec_set(REAL* a, int anr, REAL value1, REAL value2) {
   a[anr * 2] = value1;
@@ -64,9 +72,23 @@ inline void vec_cpy(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
   a[anr * 2 + 1] = b[bnr * 2 + 1] * mul;
 }
 
+inline void vec_cpy_8(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(a + anr * 2, _mm512_mul_ps(b_vec, mul_vec));
+}
+
 inline void vec_add(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
   a[anr * 2] += b[bnr * 2] * mul;
   a[anr * 2 + 1] += b[bnr * 2 + 1] * mul;
+}
+
+inline void vec_add_8(REAL* a, int anr, REAL* b, int bnr, REAL mul = 1.0) {
+  __m512 a_vec = _mm512_loadu_ps(a + anr * 2);
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(a + anr * 2,
+                   _mm512_add_ps(a_vec, _mm512_mul_ps(b_vec, mul_vec)));
 }
 
 inline void vec_scale(REAL* a, int anr, REAL mul) {
@@ -80,6 +102,15 @@ inline void vec_set_add(REAL* dst, int dnr, REAL* a, int anr, REAL* b, int bnr,
   dst[dnr * 2 + 1] = (a[anr * 2 + 1] + b[bnr * 2 + 1]) * mul;
 }
 
+inline void vec_set_add_8(REAL* dst, int dnr, REAL* a, int anr, REAL* b,
+                          int bnr, REAL mul = 1.0) {
+  __m512 a_vec = _mm512_loadu_ps(a + anr * 2);
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(dst + dnr * 2,
+                   _mm512_mul_ps(_mm512_add_ps(a_vec, b_vec), mul_vec));
+}
+
 inline void vec_set_sub(REAL* dst, int dnr, REAL* a, int anr, REAL* b, int bnr,
                         REAL mul = 1.0) {
   dnr *= 2;
@@ -87,6 +118,15 @@ inline void vec_set_sub(REAL* dst, int dnr, REAL* a, int anr, REAL* b, int bnr,
   bnr *= 2;
   dst[dnr++] = (a[anr++] - b[bnr++]) * mul;
   dst[dnr] = (a[anr] - b[bnr]) * mul;
+}
+
+inline void vec_set_sub_8(REAL* dst, int dnr, REAL* a, int anr, REAL* b,
+                          int bnr, REAL mul = 1.0) {
+  __m512 a_vec = _mm512_loadu_ps(a + anr * 2);
+  __m512 b_vec = _mm512_loadu_ps(b + bnr * 2);
+  __m512 mul_vec = _mm512_set1_ps(mul);
+  _mm512_storeu_ps(dst + dnr * 2,
+                   _mm512_mul_ps(_mm512_sub_ps(a_vec, b_vec), mul_vec));
 }
 
 inline REAL vec_dot(REAL* a, int anr, REAL* b, int bnr) {
@@ -161,6 +201,7 @@ inline REAL sphkernel2d_diff(float r, float h) {
 }
 
 void init() {
+#pragma omp parallel for
   for (int k = 0; k < N; k++) {
     int i = k / n;
     int j = k % n;
@@ -172,20 +213,29 @@ void init() {
 }
 
 void prediction() {
+#pragma omp parallel for
   for (int k = 0; k < N; k++) {
     vec_cpy(x_cache.data(), k, x.data(), k);
     vec_add(v.data(), k, g.data(), 0, dt);
     vec_add(x.data(), k, v.data(), k, dt);
   }
+
+  /*for (int k = 0; k < N; k += 8) {
+    vec_cpy_8(x_cache.data(), k, x.data(), k);
+    vec_add_8(v.data(), k, g_vec.data(), 0, dt);
+    vec_add_8(x.data(), k, v.data(), k, dt);
+  }*/
 }
 
 void update_vel() {
-  for (int k = 0; k < N; k++) {
-    vec_set_sub(v.data(), k, x.data(), k, x_cache.data(), k, 1.0 / dt);
+#pragma omp parallel for
+  for (int k = 0; k < N; k += 8) {
+    vec_set_sub_8(v.data(), k, x.data(), k, x_cache.data(), k, 1.0 / dt);
   }
 }
 
 void collision() {
+#pragma omp parallel for
   for (int k = 0; k < N; k++) {
     if (x[k * 2] < r) x[k * 2] = r + bound_epsilon * random_uniform();
     if (x[k * 2] > 1.0 - r)
@@ -200,16 +250,21 @@ void neighbor_update() {
   memset(grid_num_particles.data(), 0, sizeof(INDEX) * grid_count * grid_count);
   memset(column_prefix.data(), 0, sizeof(INDEX) * grid_count);
 
+  INDEX* gnp = grid_num_particles.data();
+
+#pragma omp parallel for reduction(+ : gnp[:grid_count * grid_count])
   for (int i = 0; i < N; i++) {
     int gridx, gridy;
     pos_to_grid(x.data(), i, gridx, gridy);
     assert(0 <= gridx && gridx < grid_count);
     assert(0 <= gridy && gridy < grid_count);
-    grid_num_particles[get_grid_id(gridx, gridy)] += 1;
+    gnp[get_grid_id(gridx, gridy)] += 1;
   }
 
+  INDEX* cp = column_prefix.data();
+#pragma omp parallel for reduction(+ : cp[:grid_count])
   for (int i = 0; i < grid_count * grid_count; i++) {
-    column_prefix[i / grid_count] += grid_num_particles[i];
+    cp[i / grid_count] += grid_num_particles[i];
   }
 
   grid_prefix[0] = 0;
@@ -217,6 +272,7 @@ void neighbor_update() {
     grid_prefix[i * grid_count] =
         grid_prefix[(i - 1) * grid_count] + column_prefix[i - 1];
 
+#pragma omp parallel for
   for (int i = 0; i < grid_count; i++) {
     for (int j = 0; j < grid_count; j++) {
       int index = i * grid_count + j;
@@ -259,16 +315,20 @@ void iterate_neighbor(int part_id, Callable func) {
 
 void rho_integral() {
   memset(rho.data(), 0.0f, sizeof(REAL) * N);
+  REAL* rhop = rho.data();
+
+#pragma omp parallel for reduction(+ : rhop[:N])
   for (int i = 0; i < N; i++) {
     iterate_neighbor(i, [&](int j) {
       REAL dis = vec_dist(x.data(), i, x.data(), j);
-      rho[i] += sphkernel2d(dis, h) * mass;
+      rhop[i] += sphkernel2d(dis, h) * mass;
     });
-    rho[i] += sphkernel2d(0.0, h) * mass;
+    rhop[i] += sphkernel2d(0.0, h) * mass;
   }
 }
 
 void compute_lambda() {
+#pragma omp parallel for
   for (int i = 0; i < N; i++) {
     REAL C = rho[i] / standard_rho - 1.0f;
     REAL deriv_sum = 0.0f;
@@ -297,6 +357,9 @@ void compute_lambda() {
 
 void compute_delta_pos() {
   memset(x_delta.data(), 0.0f, N * 2 * sizeof(REAL));
+  REAL* xdp = x_delta.data();
+
+#pragma omp parallel for reduction(+ : xdp[:2 * N])
   for (int i = 0; i < N; i++) {
     iterate_neighbor(i, [&](int j) {
       REAL p[2];
@@ -312,7 +375,7 @@ void compute_delta_pos() {
       vec_cpy(deriv, 0, p, 0, sphkernel2d_diff(p_norm, h));
       REAL w = sphkernel2d(p_norm, h) / sphkernel2d(h * scorr_frac, h);
       REAL scorr = -powf(scorr_k * w, scorr_n);
-      vec_add(x_delta.data(), i, deriv, 0,
+      vec_add(xdp, i, deriv, 0,
               (lambdaf[i] + lambdaf[j] + scorr) / standard_rho);
     });
   }
@@ -320,6 +383,9 @@ void compute_delta_pos() {
 }
 
 void apply_viscosity() {
+  REAL* velp = v.data();
+
+#pragma omp parallel for reduction(+ : velp[:2 * N])
   for (int i = 0; i < N; i++) {
     REAL delta_v[2];
     vec_set(delta_v, 0, 0.0, 0.0);
@@ -328,16 +394,22 @@ void apply_viscosity() {
       vec_set_sub(p, 0, x.data(), i, x.data(), j);
       REAL p_norm = vec_norm(p, 0);
       REAL w = sphkernel2d(p_norm, h);
-      vec_set_sub(p, 0, v.data(), i, v.data(), j, w);
+      vec_set_sub(p, 0, velp, i, velp, j, w);
       vec_add(delta_v, 0, p, 0);
     });
-    vec_add(v.data(), i, delta_v, 0, -1.0f * visc_c);
+    vec_add(velp, i, delta_v, 0, -1.0f * visc_c);
   }
 }
 
 void get_average_rho() {
   avgrho = 0.0f;
-  for (int i = 0; i < N; i++) avgrho += rho[i];
+  __m512 avgrho_vec = _mm512_setzero_ps();
+  for (int i = 0; i < N; i += 16) {
+    __m512 rho_vec = _mm512_loadu_ps(rho.data() + i);
+    avgrho_vec = _mm512_add_ps(avgrho_vec, rho_vec);
+  }
+
+  for (int i = 0; i < 16; i++) avgrho += avgrho_vec[i];
   avgrho /= N;
 }
 

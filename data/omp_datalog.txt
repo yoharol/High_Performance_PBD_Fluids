@@ -1,0 +1,8 @@
+prediction time cost average: 6.6025e-05
+collision time cost average: 2.25992e-05
+neighbor finding time cost average: 3.41e-05
+rho integral time cost average: 0.000179991
+lambda compute time cost average: 0.00016033
+position update time cost average: 0.000246869
+velocity update time cost average: 2.19167e-06
+viscosity update time cost average: 0.000186083
